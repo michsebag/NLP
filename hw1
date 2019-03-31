@@ -1,0 +1,246 @@
+import csv
+import numpy as np
+from collections import defaultdict
+
+
+
+class CounterCreator:
+    def __init__(self, n_gram):
+        self.lines_counter = 0
+        self.counts = defaultdict(int)
+        self.n_gram = n_gram
+
+    def train(self, text):
+        for line in text.splitlines():
+            self.lines_counter += 1
+            self.handle_start_line(line)
+            self.handle_mid_line(line)
+            self.handle_end_line(line)
+
+    def handle_end_line(self, line):
+        if self.n_gram > 1:
+            end_string = str(line[len(line) - self.n_gram + 1: len(line)]) + str('</s>')
+            self.counts[end_string] += 1
+
+    def handle_mid_line(self, line):
+        for i in range(0, len(line) - self.n_gram):
+            t = line[i:i + self.n_gram]
+            self.counts[t] += 1
+
+    def handle_start_line(self, line):
+        for j in range(self.n_gram - 1, 0, -1):
+            start_string = create_complex_string('<s>', j)
+            start_string = start_string + str(line[0: self.n_gram - j])
+            self.counts[start_string] += 1
+
+    def add_start_to_dictionary(self):
+        self.counts[create_complex_string('<s>', self.n_gram)] = self.lines_counter
+
+    def remove_start_from_dictionary(self):
+        self.counts.pop(create_complex_string('<s>', self.n_gram))
+
+
+def create_complex_string(text, times):
+    output = ""
+    for j in range(1, times + 1, 1):
+        output = output + str(text)
+    return output
+
+
+def lm(corpus_file, model_file):
+    generate_file_to_model(corpus_file, model_file)
+    with open(model_file, 'r') as my_file:
+        data = my_file.read()
+        my_file.close()
+        counter_3_gram = CounterCreator(3)
+        counter_3_gram.train(data)
+        counter_2_gram = CounterCreator(2)
+        counter_2_gram.train(data)
+        counter_1_gram = CounterCreator(1)
+        counter_1_gram.train(data)
+
+        counter_2_gram.add_start_to_dictionary()
+
+        model_file = open(model_file, "w+")
+        handle_3_grams(counter_2_gram, counter_3_gram, model_file)
+        handle_2_grams(counter_1_gram, counter_2_gram, model_file)
+        handle_1_grams(counter_1_gram, data, model_file)
+
+        model_file.close()
+
+
+def handle_1_grams(counter_1_gram, data, model_file):
+    model_file.write('1-grams:' + '\n')
+    counter_1_gram.remove_start_from_dictionary()
+    data_len = float(len(data))
+    for key in counter_1_gram.counts.keys():
+        prob = (counter_1_gram.counts[key] / data_len)
+        model_file.write(str(key) + '\t' + str(prob) + '\n')
+
+
+def handle_2_grams(counter_1_gram, counter_2_gram, model_file):
+    model_file.write('2-grams:' + '\n')
+    counter_2_gram.remove_start_from_dictionary()
+    counter_1_gram.add_start_to_dictionary()
+    for key in counter_2_gram.counts.keys():
+        given_string_count = handle_key_endings(counter_1_gram, key)
+        given_string_count = fix_given_string_count(given_string_count)
+        prob = (counter_2_gram.counts[key] / given_string_count)
+        model_file.write(str(key) + '\t' + str(prob) + '\n')
+
+
+def handle_key_endings(counter_n_gram, key):
+    if str(key).endswith('</s>'):
+        given_string = str(key)[0: len(key) - 4]
+    else:
+        given_string = str(key)[0: len(key) - 1]
+    given_string_count = float(counter_n_gram.counts[given_string])
+    return given_string_count
+
+
+def handle_3_grams(counter_2_gram, counter_3_gram, model_file):
+    model_file.write('3-grams:' + '\n')
+    for key in counter_3_gram.counts.keys():
+        given_string_count = handle_key_endings(counter_2_gram, key)
+        given_string_count = fix_given_string_count(given_string_count)
+        prob = (counter_3_gram.counts[key] / given_string_count)
+        model_file.write(str(key) + '\t' + str(prob) + '\n')
+
+
+def fix_given_string_count(given_string_count):
+    if given_string_count == 0:
+        given_string_count = 1
+    return given_string_count
+
+
+def generate_file_to_model(corpus_file, model_file):
+    with open(corpus_file, 'r') as csvFile:
+        reader = csv.reader(csvFile, 'excel')
+        f = open(model_file, "w+")
+        for row in reader:
+            data = str(row)
+            f.write(data + '\n')
+    f.close()
+
+
+class InterpolationCalculator:
+    def __init__(self, model_file, weights):
+        self.dict3gram = defaultdict(float)
+        self.dict2gram = defaultdict(float)
+        self.dict1gram = defaultdict(float)
+        self.delta3 = weights[0]
+        self.delta2 = weights[1]
+        self.delta1 = weights[2]
+        self.generate_dictionary_from_model_file(model_file)
+
+    def create_dictionary_by_model(self, dict, n_gram_string, line_index, splitted_lines):
+        while splitted_lines[line_index] != n_gram_string:
+            key_value_pair = splitted_lines[line_index].split('\t')
+            dict[key_value_pair[0]] = float(key_value_pair[1])
+            line_index += 1
+        line_index += 1
+        return line_index
+
+    def generate_dictionary_from_model_file(self, model_file):
+        with open(model_file, 'r') as myModel:
+            data_model = myModel.read()
+            splitted_lines = data_model.splitlines()
+            line_index = 1
+            line_index = self.create_dictionary_by_model(self.dict3gram, '2-grams:', line_index, splitted_lines)
+            line_index = self.create_dictionary_by_model(self.dict2gram, '1-grams:', line_index, splitted_lines)
+            self.create_dictonary_for_1_gram_by_model(line_index, splitted_lines)
+            myModel.close()
+
+    def create_dictonary_for_1_gram_by_model(self, line_index, splitted_lines):
+        while line_index < len(splitted_lines):
+            key_value_pair = splitted_lines[line_index].split('\t')
+            self.dict1gram[key_value_pair[0]] = float(key_value_pair[1])
+            line_index += 1
+
+    def interpolation_log(self, event_string):
+        splitted_input = string_splitter(event_string)
+        prob3 = self.dict3gram[event_string]
+        prob2 = self.dict2gram[splitted_input[0] + splitted_input[1]]
+        prob1 = self.dict1gram[splitted_input[1]]
+        interp = self.delta3 * prob3 + self.delta2 * prob2 + self.delta1 * prob1
+        if interp == 0:
+            return 0
+        return np.log2(interp)
+
+
+def string_splitter(event_string):
+    output = [None] * 2
+    if event_string.startswith('<s>'):
+        event_string = event_string[3:len(event_string)]
+    else:
+        event_string = event_string[1:len(event_string)]
+    if event_string.startswith('<s>'):
+        output[0] = '<s>'
+        event_string = event_string[3:len(event_string)]
+    else:
+        output[0] = event_string[0]
+        event_string = event_string[1:len(event_string)]
+    output[1] = event_string
+    return output
+
+
+def eval(input_file, model_file, weights):
+    interpolation_calculator = InterpolationCalculator(model_file, weights)
+    with open(input_file, 'r') as inputFile:
+        interpolation_sum = 0.0
+        file_data = inputFile.read()
+        N = len(file_data)
+        for line in file_data.splitlines():
+            interpolation_sum = interpolate_line(interpolation_calculator, interpolation_sum, line)
+        inputFile.close()
+    H = ((-1)*interpolation_sum) / N
+    return np.power(2, H)
+
+
+def interpolate_line(interpolation_calculator, interpolation_sum, line):
+    interpolation_sum = calculate_start_interpolation(interpolation_calculator, interpolation_sum, line)
+    for i in range(0, len(line) - 2):
+        interpolation_sum += interpolation_calculator.interpolation_log(line[i:i + 3])
+    interpolation_sum += interpolation_calculator.interpolation_log(line[len(line) - 2:len(line)] + '</s>')
+    return interpolation_sum
+
+
+def calculate_start_interpolation(interpolation_calculator, interpolation_sum, line):
+    interpolation_sum += interpolation_calculator.interpolation_log('<s><s>' + line[0])
+    interpolation_sum += interpolation_calculator.interpolation_log('<s>' + line[0:2])
+    return interpolation_sum
+
+
+def part3():
+    langs = ['en', 'es', 'fr', 'in', 'it', 'nl', 'pt', 'tl']
+    weights = [0.4, 0.3, 0.3]
+    for lang in langs:
+        split_to_train_and_dev(lang + '.csv', lang)
+        lm(lang + 'Train.txt', lang + 'Model.txt')
+    num_of_langs = len(langs)
+    table = np.zeros((num_of_langs, num_of_langs))
+    for modelLang in range(0, num_of_langs):
+        for testLang in range(0, num_of_langs):
+            table[modelLang][testLang] = eval(langs[testLang] + 'Dev.txt', langs[modelLang] + 'Model.txt', weights)
+    return table
+
+
+def split_to_train_and_dev(corpus_file, lang):
+    with open(corpus_file, 'r') as csvFile:
+        reader = csv.reader(csvFile, 'excel')
+        train = open(lang + 'Train.txt', "w+")
+        dev = open(lang + 'Dev.txt', "w+")
+        i = 1
+        for row in reader:
+            data = str(row[1])
+            if i % 9 == 0:
+                dev.write(data)
+                dev.write('\n')
+            else:
+                train.write(data)
+                train.write('\n')
+            i += 1
+
+    train.close()
+    dev.close()
+    csvFile.close()
